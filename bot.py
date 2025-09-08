@@ -47,15 +47,21 @@ GUILD_IDS = [1181834816631623761]  # e.g., [123456789012345678]
 @client.event
 async def on_ready():
     try:
-        if GUILD_IDS:
+        if GUILD_IDS:  # instant, per-server sync
             for gid in GUILD_IDS:
-                await tree.sync(guild=discord.Object(id=gid))
-        else:
-            await tree.sync()
+                g = discord.Object(id=gid)
+                synced = await tree.sync(guild=g)
+                print(f"Synced {len(synced)} commands to guild {gid}")
+        else:          # slow global sync (can take ~1 hr)
+            synced = await tree.sync()
+            print(f"Synced {len(synced)} global commands")
+
         print(f"Logged in as {client.user} (ID: {client.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
-
+@tree.command(name="ping", description="Test command")
+async def ping_cmd(interaction: discord.Interaction):
+    await interaction.response.send_message("Pong!", ephemeral=True)
 @tree.command(name="status", description="Check bot ↔ Sheets connectivity.")
 async def status_cmd(interaction: discord.Interaction):
     try:
