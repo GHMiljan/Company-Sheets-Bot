@@ -155,8 +155,75 @@ async def log_cmd(interaction: discord.Interaction, key: str, value: str):
             await interaction.followup.send(f"✅ Logged {key} → {value}", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
+# ----------------- Guild config -----------------
+GUILD_IDS = [1181834816631623761]   # <-- your real server ID (int, no quotes)
+GUILDS = [discord.Object(id=g) for g in GUILD_IDS]
 
+# ----------------- Status (must be async) -----------------
+@tree.command(name="status", description="Check bot ↔ Sheets connectivity.")
+@app_commands.guilds(*GUILDS)
+async def status_cmd(interaction: discord.Interaction):
+    try:
+        _ = ws.title
+        await interaction.response.send_message("✅ Online and connected to Sheets.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+
+# ----------------- Ping test -----------------
+@tree.command(name="ping", description="Test command")
+@app_commands.guilds(*GUILDS)
+async def ping_cmd(interaction: discord.Interaction):
+    await interaction.response.send_message("Pong!", ephemeral=True)
+
+# ----------------- Admin commands -----------------
+@tree.command(name="loguser", description="(Admins) Log a category for a server member")
+@app_commands.default_permissions(administrator=True)
+@app_commands.guilds(*GUILDS)
+@app_commands.describe(member="Pick the server member to log",
+                       category="Category to log (e.g., Audition, Landscaping)")
+async def loguser(interaction: discord.Interaction, member: discord.Member, category: str):
+    await interaction.response.defer(ephemeral=True)
+    date_str = datetime.now().strftime("%m/%d/%Y")
+    target_name = member.display_name
+    values = [date_str, target_name, category]
+    async with write_lock:
+        try:
+            await asyncio.to_thread(safe_append_row, values)
+            await interaction.followup.send(f"✅ Logged **{target_name}** → **{category}**", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+@tree.command(name="loguser_text", description="(Admins) Log a category for a name you type")
+@app_commands.default_permissions(administrator=True)
+@app_commands.guilds(*GUILDS)
+@app_commands.describe(username="Name to record (free text)", category="Category to log")
+async def loguser_text(interaction: discord.Interaction, username: str, category: str):
+    await interaction.response.defer(ephemeral=True)
+    date_str = datetime.now().strftime("%m/%d/%Y")
+    values = [date_str, username, category]
+    async with write_lock:
+        try:
+            await asyncio.to_thread(safe_append_row, values)
+            await interaction.followup.send(f"✅ Logged **{username}** → **{category}**", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+# ----------------- Force guild sync on ready -----------------
+@client.event
+async def on_ready():
+    try:
+        print("Registered commands in code:", [c.name for c in tree.get_commands()])
+        total = 0
+        for g in GUILDS:
+            synced = await tree.sync(guild=g)
+            print(f"Synced {len(synced)} commands to guild {g.id}")
+            total += len(synced)
+        print(f"Logged in as {client.user} (ID: {client.user.id})")
+    except Exception as e:
+        print("Command sync failed:", e)
+            
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN:
         raise RuntimeError("Missing DISCORD_BOT_TOKEN.")
     client.run(DISCORD_BOT_TOKEN)
+
