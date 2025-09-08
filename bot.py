@@ -1,0 +1,107 @@
+import os, json, asyncio
+from datetime import datetime
+import discord
+from discord import app_commands
+from dotenv import load_dotenv
+import gspread
+from google.oauth2.service_account import Credentials
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+load_dotenv()
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")
+WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1")
+
+SERVICE_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
+SERVICE_JSON_INLINE = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_INLINE")
+
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+if SERVICE_JSON_PATH:
+    creds = Credentials.from_service_account_file(SERVICE_JSON_PATH, scopes=SCOPES)
+elif SERVICE_JSON_INLINE:
+    creds = Credentials.from_service_account_info(json.loads(SERVICE_JSON_INLINE), scopes=SCOPES)
+else:
+    raise RuntimeError("Provide Google creds via GOOGLE_SERVICE_ACCOUNT_JSON_PATH or GOOGLE_SERVICE_ACCOUNT_JSON_INLINE.")
+
+gc = gspread.authorize(creds)
+sh = gc.open_by_key(SPREADSHEET_ID)
+ws = sh.worksheet(WORKSHEET_NAME)
+
+write_lock = asyncio.Lock()
+
+@retry(wait=wait_exponential(min=1, max=10), stop=stop_after_attempt(5))
+def safe_append_row(values):
+    ws.append_row(values, value_input_option="USER_ENTERED")
+
+@retry(wait=wait_exponential(min=1, max=10), stop=stop_after_attempt(5))
+def safe_update_acell(a1, value):
+    ws.update_acell(a1, value)
+
+intents = discord.Intents.default()
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
+
+# Put your server ID here for instant slash commands (replace 123...):
+GUILD_IDS = [1181834816631623761]  # e.g., [123456789012345678]
+
+@client.event
+async def on_ready():
+    try:
+        if GUILD_IDS:
+            for gid in GUILD_IDS:
+                await tree.sync(guild=discord.Object(id=gid))
+        else:
+            await tree.sync()
+        print(f"Logged in as {client.user} (ID: {client.user.id})")
+    except Exception as e:
+        print("Command sync failed:", e)
+
+@tree.command(name="status", description="Check bot ↔ Sheets connectivity.")
+async def status_cmd(interaction: discord.Interaction):
+    try:
+        _ = ws.title
+        await interaction.response.send_message("✅ Online and connected to Sheets.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
+
+@tree.command(name="append", description="Append a full row to the sheet.")
+@app_commands.describe(row='Comma or tab separated values')
+async def append_cmd(interaction: discord.Interaction, row: str):
+    await interaction.response.defer(ephemeral=True)
+    values = [c.strip() for c in (row.split("\t") if "\t" in row else row.split(","))]
+    async with write_lock:
+        try:
+            await asyncio.to_thread(safe_append_row, values)
+            await interaction.followup.send(f"✅ Appended {len(values)} value(s).", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
+
+@tree.command(name="setcell", description="Write a value to a specific cell (A1).")
+@app_commands.describe(cell='e.g., A1', value='Text or number')
+async def setcell_cmd(interaction: discord.Interaction, cell: str, value: str):
+    await interaction.response.defer(ephemeral=True)
+    async with write_lock:
+        try:
+            await asyncio.to_thread(safe_update_acell, cell, value)
+            await interaction.followup.send(f"✅ Set {cell} = {value}", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
+
+@tree.command(name="log", description="Append a timestamped key/value row.")
+@app_commands.describe(key='Label', value='Value')
+async def log_cmd(interaction: discord.Interaction, key: str, value: str):
+    await interaction.response.defer(ephemeral=True)
+    ts = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    user = f"{interaction.user.name}#{interaction.user.discriminator}"
+    values = [ts, user, key, value]
+    async with write_lock:
+        try:
+            await asyncio.to_thread(safe_append_row, values)
+            await interaction.followup.send(f"✅ Logged {key} → {value}", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
+
+if __name__ == "__main__":
+    if not DISCORD_BOT_TOKEN:
+        raise RuntimeError("Missing DISCORD_BOT_TOKEN.")
+    client.run(DISCORD_BOT_TOKEN)
