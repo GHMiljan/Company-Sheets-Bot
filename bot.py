@@ -63,6 +63,45 @@ async def status_cmd(interaction: discord.Interaction):
         await interaction.response.send_message("✅ Online and connected to Sheets.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
+# --- Admin-only: log a server member by mention/picker ---
+@tree.command(name="loguser", description="(Admins) Log a category for a server member")
+@app_commands.default_permissions(administrator=True)   # only admins can use
+@app_commands.describe(member="Pick the server member to log",
+                       category="Category to log (e.g., Audition, Landscaping)")
+async def loguser(interaction: discord.Interaction, member: discord.Member, category: str):
+    await interaction.response.defer(ephemeral=True)
+
+    # Date as MM/DD/YYYY
+    date_str = datetime.now().strftime("%m/%d/%Y")
+    target_name = member.display_name  # or member.name if you prefer the username
+
+    # Row: Date | User | Category
+    values = [date_str, target_name, category]
+
+    async with write_lock:
+        try:
+            await asyncio.to_thread(safe_append_row, values)
+            await interaction.followup.send(f"✅ Logged **{target_name}** → **{category}**", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+
+# --- Admin-only: log any text name (for users not in the server / external) ---
+@tree.command(name="loguser_text", description="(Admins) Log a category for a name you type")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(username="Name to record (free text)", category="Category to log")
+async def loguser_text(interaction: discord.Interaction, username: str, category: str):
+    await interaction.response.defer(ephemeral=True)
+
+    date_str = datetime.now().strftime("%m/%d/%Y")
+    values = [date_str, username, category]
+
+    async with write_lock:
+        try:
+            await asyncio.to_thread(safe_append_row, values)
+            await interaction.followup.send(f"✅ Logged **{username}** → **{category}**", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 @tree.command(name="append", description="Append a full row to the sheet.")
 @app_commands.describe(row='Comma or tab separated values')
