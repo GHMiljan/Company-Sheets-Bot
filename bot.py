@@ -42,17 +42,22 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
 # Put your server ID here for instant slash commands (replace 123...):
-GUILD_IDS = [1181834816631623761]  # e.g., [123456789012345678]
+GUILD_IDS = [1181834816631623761]   # <-- your real server ID (integer, no quotes)
+GUILDS = [discord.Object(id=g) for g in GUILD_IDS]
 
 @client.event
 async def on_ready():
     try:
-        if GUILD_IDS:  # instant, per-server sync
-            for gid in GUILD_IDS:
-                g = discord.Object(id=gid)
+        print("Registered commands in code:",
+              [c.name for c in tree.get_commands()])  # debug
+
+        if GUILD_IDS:
+            total = 0
+            for g in GUILDS:
                 synced = await tree.sync(guild=g)
-                print(f"Synced {len(synced)} commands to guild {gid}")
-        else:          # slow global sync (can take ~1 hr)
+                print(f"Synced {len(synced)} commands to guild {g.id}")
+                total += len(synced)
+        else:
             synced = await tree.sync()
             print(f"Synced {len(synced)} global commands")
 
@@ -63,6 +68,11 @@ async def on_ready():
 async def ping_cmd(interaction: discord.Interaction):
     await interaction.response.send_message("Pong!", ephemeral=True)
 @tree.command(name="status", description="Check bot ↔ Sheets connectivity.")
+@tree.command(name="ping", description="Test command")
+@app_commands.guilds(*GUILDS)   # pin to your server for instant sync
+async def ping_cmd(interaction: discord.Interaction):
+    await interaction.response.send_message("Pong!", ephemeral=True)
+
 async def status_cmd(interaction: discord.Interaction):
     try:
         _ = ws.title
