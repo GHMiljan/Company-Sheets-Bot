@@ -1,4 +1,4 @@
-# bot.py — Discord ↔ Google Sheets bot + loads duel_royale cog
+# bot.py — Discord ↔ Google Sheets bot + loads duel_royale cog (commands.Bot version)
 
 import os
 import json
@@ -7,6 +7,7 @@ from datetime import datetime
 
 import discord
 from discord import app_commands
+from discord.ext import commands
 from dotenv import load_dotenv
 
 import gspread
@@ -16,13 +17,11 @@ from google.oauth2.service_account import Credentials
 load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-
 SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")              # the /d/<THIS>/edit ID
 WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1")     # tab name
 SA_JSON_INLINE = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_INLINE")   # preferred on Railway
 SA_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")       # optional alternative
 
-# Guilds for instant slash command sync
 def _guild_ids_from_env() -> list[int]:
     raw = (os.getenv("GUILD_IDS") or "").strip()
     return [int(x) for x in raw.split(",") if x.strip().isdigit()]
@@ -52,34 +51,32 @@ def make_gspread_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 gc = make_gspread_client()
-sh = gc.open_by_key(SPREADSHEET_ID)      # 404 if ID wrong / sheet not shared to service account
-ws = sh.worksheet(WORKSHEET_NAME)        # error if tab name wrong
+sh = gc.open_by_key(SPREADSHEET_ID)
+ws = sh.worksheet(WORKSHEET_NAME)
 
-# ----------------- Discord setup -----------------
+# ----------------- Discord setup (commands.Bot) -----------------
 intents = discord.Intents.default()
 intents.guilds = True
-intents.members = True  # for member pickers
+# If you can't enable the privileged intent in Dev Portal, set this to False:
+intents.members = True  # requires toggling “Server Members Intent” in Developer Portal → Bot tab
 
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+tree = bot.tree  # convenience alias
 
-# Lock so multiple commands don't race on the sheet
 write_lock = asyncio.Lock()
 
 # ----------------- Helpers -----------------
 def safe_append_row(values: list[str]) -> None:
-    """Called in a thread to avoid blocking the event loop."""
     ws.append_row(values, value_input_option="USER_ENTERED")
 
 def safe_set_cell(a1: str, value: str) -> None:
     ws.update_acell(a1, value)
 
 def parse_row_str(s: str) -> list[str]:
-    """Accept comma OR tab separated row input."""
     return [c.strip() for c in (s.split("\t") if "\t" in s else s.split(","))]
 
 # ----------------- Ready → sync to guild(s) -----------------
-@client.event
+@bot.event
 async def on_ready():
     try:
         print("Registered commands in code:", [c.name for c in tree.get_commands()])
@@ -88,7 +85,7 @@ async def on_ready():
             synced = await tree.sync(guild=g)
             print(f"Synced {len(synced)} commands to guild {g.id}")
             total += len(synced)
-        print(f"Logged in as {client.user} (ID: {client.user.id})")
+        print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
 
@@ -97,7 +94,7 @@ async def on_ready():
 @app_commands.guilds(*GUILDS)
 async def status_cmd(interaction: discord.Interaction):
     try:
-        _ = ws.title  # touch the worksheet to verify access
+        _ = ws.title
         await interaction.response.send_message("✅ Online and connected to Sheets.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"❌ {e}", ephemeral=True)
@@ -140,7 +137,7 @@ async def setcell_cmd(interaction: discord.Interaction, cell: str, value: str):
                        category="Category to log (e.g., Audition, Landscaping)")
 async def loguser(interaction: discord.Interaction, member: discord.Member, category: str):
     await interaction.response.defer(ephemeral=True)
-    date_str = datetime.now().strftime("%m/%d/%Y")  # MM/DD/YYYY
+    date_str = datetime.now().strftime("%m/%d/%Y")
     values = [date_str, member.display_name, category]
     async with write_lock:
         try:
@@ -170,14 +167,14 @@ async def loguser_text(interaction: discord.Interaction, username: str, category
 
 # ----------------- Run (async; load the duel_royale extension) -----------------
 async def _main():
-    # Load your duel/royale cog before starting the client
+    # Load your duel/royale cog before starting the bot
     try:
-        await client.load_extension("duel_royale")  # file: duel_royale.py in same folder
+        await bot.load_extension("duel_royale")  # file: duel_royale.py in same folder
         print("Loaded duel_royale cog ✅")
     except Exception as e:
         print(f"Failed to load duel_royale cog: {e}")
 
-    await client.start(DISCORD_BOT_TOKEN)
+    await bot.start(DISCORD_BOT_TOKEN)
 
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN:
