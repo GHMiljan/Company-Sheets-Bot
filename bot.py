@@ -1,4 +1,4 @@
-# bot.py — Discord ↔ Google Sheets bot + loads duel_royale cog (commands.Bot version)
+# bot.py — Discord ↔ Google Sheets bot + loads duel_royale cog (commands.Bot)
 
 import os
 import json
@@ -91,7 +91,7 @@ async def on_ready():
 
 # ----------------- Core commands -----------------
 @tree.command(name="status", description="Check bot ↔ Sheets connectivity.")
-@app_commands.default_permissions(administrator=True) 
+@app_commands.default_permissions(administrator=True)   # 🔒 admin-only
 @app_commands.guilds(*GUILDS)
 async def status_cmd(interaction: discord.Interaction):
     try:
@@ -102,11 +102,11 @@ async def status_cmd(interaction: discord.Interaction):
 
 @tree.command(name="ping", description="Test command")
 @app_commands.guilds(*GUILDS)
-async def ping_cmd(interaction: discord.Interaction):
+async def ping_cmd(interaction: discord.Interaction):   # ✅ public
     await interaction.response.send_message("Pong!", ephemeral=True)
 
 @tree.command(name="append", description="Append a full row to the sheet.")
-@app_commands.default_permissions(administrator=True) 
+@app_commands.default_permissions(administrator=True)   # 🔒 admin-only
 @app_commands.guilds(*GUILDS)
 @app_commands.describe(row="Comma or tab separated values")
 async def append_cmd(interaction: discord.Interaction, row: str):
@@ -120,7 +120,7 @@ async def append_cmd(interaction: discord.Interaction, row: str):
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
 @tree.command(name="setcell", description="Write a value to a specific cell (A1).")
-@app_commands.default_permissions(administrator=True) 
+@app_commands.default_permissions(administrator=True)   # 🔒 admin-only
 @app_commands.guilds(*GUILDS)
 @app_commands.describe(cell='Cell like "A1"', value="Text or number")
 async def setcell_cmd(interaction: discord.Interaction, cell: str, value: str):
@@ -134,7 +134,7 @@ async def setcell_cmd(interaction: discord.Interaction, cell: str, value: str):
 
 # ----------------- Admin logging commands -----------------
 @tree.command(name="loguser", description="(Admins) Log a category for a server member")
-@app_commands.default_permissions(administrator=True)
+@app_commands.default_permissions(administrator=True)   # 🔒 admin-only
 @app_commands.guilds(*GUILDS)
 @app_commands.describe(member="Pick the server member to log",
                        category="Category to log (e.g., Audition, Landscaping)")
@@ -152,7 +152,7 @@ async def loguser(interaction: discord.Interaction, member: discord.Member, cate
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
 @tree.command(name="loguser_text", description="(Admins) Log a category for a name you type")
-@app_commands.default_permissions(administrator=True)
+@app_commands.default_permissions(administrator=True)   # 🔒 admin-only
 @app_commands.guilds(*GUILDS)
 @app_commands.describe(username="Name to record (free text)", category="Category to log")
 async def loguser_text(interaction: discord.Interaction, username: str, category: str):

@@ -6,6 +6,7 @@ import random
 import discord
 from discord.ext import commands
 from discord import app_commands
+from typing import Optional
 
 # ========= Guild targeting (instant slash sync) =========
 def _guild_ids_from_env():
@@ -22,27 +23,27 @@ ROUND_DELAY = 1.0  # seconds between narration lines
 
 # Exodia (special)
 EXODIA_IMAGE_URL = "https://i.imgur.com/gXWD1ze.jpeg"
-EXODIA_TRIGGER_CHANCE = 0.01  # 1% chance to trigger Exodia
-EXODIA_DAMAGE = 1000          # fixed damage; unaffected by multipliers
+EXODIA_TRIGGER_CHANCE = 0.01  # 1% chance
+EXODIA_DAMAGE = 1000
 
-# Mix probabilities for normal rolls (EXODIA is checked first; ULTRA_BUFF second)
-HEAL_CHANCE = 0.15   # 15% of normal rolls try a heal
-BUFF_CHANCE = 0.10   # 10% of normal rolls try a (normal) buff
+# Mix probabilities for normal rolls (EXODIA checked first; ULTRA_BUFF second)
+HEAL_CHANCE = 0.15
+BUFF_CHANCE = 0.10
 
 # Ultra-rare global buff: 1% chance any turn; next successful action ×1000
 ULTRA_BUFF = {
     "name": "divine intervention",
-    "chance": 0.01,       # 1% GLOBAL, independent of normal buff/heal/attack roll
-    "multiplier": 1000.0  # x1000 on next successful attack/heal (not Exodia)
+    "chance": 0.01,
+    "multiplier": 1000.0
 }
 
 # Shared heal: heals self and also heals every opponent for 60% of the self-heal
 SHARED_HEAL = {
-    "name": "casts Healing Aura",  # shared heal name
-    "range": (25, 40),             # heal range before multiplier
-    "chance": 0.65,                # success chance
-    "splash_ratio": 0.60,          # opponents heal % of the final self-heal
-    "weight": 0.20,                # 20% of heal rolls become this shared heal
+    "name": "casts Healing Aura",
+    "range": (25, 40),
+    "chance": 0.65,
+    "splash_ratio": 0.60,
+    "weight": 0.20,
 }
 
 # ========= Move Pools =========
@@ -105,17 +106,13 @@ def roll_from_pool(pool):
     return name, success, amount
 
 def pick_action():
-    # 1) Exodia (exact 1%)
     if random.random() < EXODIA_TRIGGER_CHANCE:
         return {'kind': 'exodia', 'name': "**summon all cards of EXODIA**",
                 'success': True, 'amount': EXODIA_DAMAGE, 'shared': False}
-
-    # 2) Global ultra-buff (exact 1% each turn)
     if random.random() < ULTRA_BUFF["chance"]:
         return {'kind': 'ultra_buff', 'name': ULTRA_BUFF["name"],
                 'success': True, 'amount': ULTRA_BUFF["multiplier"], 'shared': False}
 
-    # 3) Normal roll
     r = random.random()
     if r < BUFF_CHANCE:
         name, success, mult = roll_from_pool(BUFFS)
@@ -144,6 +141,55 @@ def apply_multiplier_if_any(mult_state, attacker_id, base_amount):
     mult_state.pop(attacker_id, None)
     return final, mult
 
+def get_tc_emoji(guild: Optional[discord.Guild]) -> str:
+    """
+    Try to find a custom emoji named 'TC' in this guild.
+    If found, returns something like '<:TC:1234567890>', else returns ':TC:' fallback.
+    """
+    if guild:
+        emoji = discord.utils.get(guild.emojis, name="TC")
+        if emoji:
+            return str(emoji)
+    return ":TC:"
+
+# ========= Views (Confirm) =========
+class BetAcceptView(discord.ui.View):
+    def __init__(self, challenger_id: int, opponent_id: int, timeout: float = 90):
+        super().__init__(timeout=timeout)
+        self.challenger_id = challenger_id
+        self.opponent_id = opponent_id
+        self.challenger_ok = False
+        self.opponent_ok = False
+
+    async def _maybe_done(self, interaction: discord.Interaction):
+        if self.challenger_ok and self.opponent_ok:
+            self.stop()
+            await interaction.response.edit_message(view=None)
+        else:
+            await interaction.response.defer()
+
+    @discord.ui.button(label="Challenger: Confirm", style=discord.ButtonStyle.primary)
+    async def challenger(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.challenger_id:
+            return await interaction.response.send_message("You’re not the challenger.", ephemeral=True)
+        if not self.challenger_ok:
+            self.challenger_ok = True
+            button.label = "Challenger: ✅"
+            button.disabled = True
+            await interaction.message.edit(view=self)
+        await self._maybe_done(interaction)
+
+    @discord.ui.button(label="Opponent: Confirm", style=discord.ButtonStyle.success)
+    async def opponent(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.opponent_id:
+            return await interaction.response.send_message("You’re not the opponent.", ephemeral=True)
+        if not self.opponent_ok:
+            self.opponent_ok = True
+            button.label = "Opponent: ✅"
+            button.disabled = True
+            await interaction.message.edit(view=self)
+        await self._maybe_done(interaction)
+
 # ========= Cog =========
 class DuelRoyale(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -154,28 +200,13 @@ class DuelRoyale(commands.Cog):
             await followup.send(line, allowed_mentions=discord.AllowedMentions.none())
             await asyncio.sleep(ROUND_DELAY)
 
-    # -------- /duel --------
-    @app_commands.command(name="duel", description="Start a 1v1 duel.")
-    @app_commands.guilds(*GUILDS)
-    @app_commands.describe(opponent="Who do you want to duel?")
-    async def duel(self, interaction: discord.Interaction, opponent: discord.Member):
-        author = interaction.user
-        if opponent.bot or opponent.id == author.id:
-            return await interaction.response.send_message(
-                "Pick a real opponent (not yourself or a bot).", ephemeral=True
-            )
-
-        await interaction.response.defer(thinking=False)
-        followup = interaction.followup
-
+    # ---- shared duel engine (used by /duel and /duelbet) ----
+    async def _run_duel(self, interaction: discord.Interaction, author: discord.Member, opponent: discord.Member):
+        await interaction.followup.send(f"⚔️ **Duel begins!** {author.display_name} vs {opponent.display_name}")
         names = {author.id: author.display_name, opponent.id: opponent.display_name}
         hp = {author.id: START_HP, opponent.id: START_HP}
         next_multiplier = {}
-
-        await self.narrate(followup, [
-            f"⚔️ **Duel begins!** {names[author.id]} vs {names[opponent.id]}",
-            f"Both fighters start at {START_HP} HP."
-        ])
+        await self.narrate(interaction.followup, [f"Both fighters start at {START_HP} HP."])
 
         attacker, defender = author.id, opponent.id
         round_no = 1
@@ -190,21 +221,18 @@ class DuelRoyale(commands.Cog):
                     color=discord.Color.dark_red()
                 )
                 embed.set_image(url=EXODIA_IMAGE_URL)
-                await followup.send(embed=embed)
+                await interaction.followup.send(embed=embed)
                 hp[defender] = max(0, hp[defender] - EXODIA_DAMAGE)
                 body = f"It deals **{EXODIA_DAMAGE}** damage!"
-
             elif act['kind'] == 'ultra_buff':
                 next_multiplier[attacker] = float(act['amount'])
                 body = f"{names[attacker]} is blessed with **{act['name']}**! Next move ×{act['amount']:.0f}!"
-
             elif act['kind'] == 'buff':
                 if act['success']:
                     next_multiplier[attacker] = float(act['amount'])
                     body = f"{names[attacker]}'s next move is empowered ×**{act['amount']:.2f}**!"
                 else:
                     body = f"{names[attacker]}'s attempt to power up **fails**."
-
             elif act['kind'] == 'heal':
                 if act['success']:
                     heal_amount, consumed = apply_multiplier_if_any(next_multiplier, attacker, act['amount'])
@@ -218,8 +246,7 @@ class DuelRoyale(commands.Cog):
                     body = f"Restores **{heal_amount} HP**{suff}.{extra}"
                 else:
                     body = "…but the recovery **fails**!"
-
-            else:  # attack
+            else:
                 if act['success']:
                     dmg, consumed = apply_multiplier_if_any(next_multiplier, attacker, act['amount'])
                     hp[defender] = max(0, hp[defender] - dmg)
@@ -229,15 +256,77 @@ class DuelRoyale(commands.Cog):
                     body = "…but it **misses**!"
 
             bars = f"HP — {names[author.id]}: **{hp[author.id]}** | {names[opponent.id]}: **{hp[opponent.id]}**"
-            await self.narrate(followup, [header, body, bars])
+            await self.narrate(interaction.followup, [header, body, bars])
 
             attacker, defender = defender, attacker
             round_no += 1
 
         winner_id = attacker if hp[attacker] > 0 else defender
-        await followup.send(f"🏆 **{names[winner_id]}** wins the duel!")
+        return author if winner_id == author.id else opponent
 
-    # -------- /royale --------
+    # -------- /duel (public) --------
+    @app_commands.command(name="duel", description="Start a 1v1 duel.")
+    @app_commands.guilds(*GUILDS)
+    @app_commands.describe(opponent="Who do you want to duel?")
+    async def duel(self, interaction: discord.Interaction, opponent: discord.Member):
+        author = interaction.user
+        if opponent.bot or opponent.id == author.id:
+            return await interaction.response.send_message("Pick a real opponent (not yourself or a bot).", ephemeral=True)
+        await interaction.response.defer(thinking=False)
+        winner = await self._run_duel(interaction, author, opponent)
+        await interaction.followup.send(f"🏆 **{winner.display_name}** wins the duel!")
+
+    # -------- /duelbet (public; loser prompted to /pay with :TC:) --------
+    @app_commands.command(name="duelbet", description="Challenge a duel with a bet (loser pays winner after).")
+    @app_commands.guilds(*GUILDS)
+    @app_commands.describe(opponent="Who do you want to duel?", amount="Bet amount")
+    async def duelbet(self, interaction: discord.Interaction, opponent: discord.Member, amount: int):
+        author = interaction.user
+        if amount <= 0:
+            return await interaction.response.send_message("Bet amount must be positive.", ephemeral=True)
+        if opponent.bot or opponent.id == author.id:
+            return await interaction.response.send_message("Pick a real opponent (not yourself or a bot).", ephemeral=True)
+
+        # Both players confirm
+        view = BetAcceptView(challenger_id=author.id, opponent_id=opponent.id, timeout=90)
+        content = (
+            f"💰 **Bet Duel Requested**: {author.mention} vs {opponent.mention}\n"
+            f"Proposed bet: **{amount}**\n\n"
+            f"Both players must confirm within 90 seconds."
+        )
+        await interaction.response.send_message(content, view=view)
+        msg = await interaction.original_response()
+        await view.wait()
+        if not (view.challenger_ok and view.opponent_ok):
+            try:
+                await msg.edit(content="❌ Bet duel cancelled (no confirmation).", view=None)
+            except:
+                pass
+            return
+
+        # Run the duel
+        await interaction.followup.send("All set—running the duel!")
+        winner = await self._run_duel(interaction, author, opponent)
+        loser = opponent if winner.id == author.id else author
+
+        # Build currency icon (custom <:TC:ID> if available, else literal :TC:)
+        tc = get_tc_emoji(interaction.guild)
+
+        # Prompt loser to pay winner using their economy bot
+        pay_cmd = f"/pay {winner.mention} {amount}"
+        embed = discord.Embed(
+            title="Bet Result",
+            description=(
+                f"🏆 **Winner:** {winner.mention}\n"
+                f"💰 {loser.mention}, please settle the bet of **{amount} {tc}**\n"
+                f"```{pay_cmd}```\n"
+                f"_Copy & send the `/pay` command with your economy bot._"
+            ),
+            color=discord.Color.gold()
+        )
+        await interaction.followup.send(embed=embed)
+
+    # -------- /royale (public) --------
     @app_commands.command(name="royale", description="Start a multi-player battle royale.")
     @app_commands.guilds(*GUILDS)
     @app_commands.describe(
@@ -354,7 +443,7 @@ class DuelRoyale(commands.Cog):
                         l2 = "but it **fails**."
                         l3 = f"{names[attacker]} HP: **{hp[attacker]}**"
 
-                else:  # attack
+                else:
                     if act['success']:
                         dmg, consumed = apply_multiplier_if_any(next_multiplier, attacker, act['amount'])
                         hp[defender] = max(0, hp[defender] - dmg)
