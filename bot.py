@@ -91,6 +91,7 @@ async def on_ready():
 
 # ----------------- Core commands -----------------
 @tree.command(name="status", description="Check bot ↔ Sheets connectivity.")
+@app_commands.default_permissions(administrator=True) 
 @app_commands.guilds(*GUILDS)
 async def status_cmd(interaction: discord.Interaction):
     try:
@@ -105,6 +106,7 @@ async def ping_cmd(interaction: discord.Interaction):
     await interaction.response.send_message("Pong!", ephemeral=True)
 
 @tree.command(name="append", description="Append a full row to the sheet.")
+@app_commands.default_permissions(administrator=True) 
 @app_commands.guilds(*GUILDS)
 @app_commands.describe(row="Comma or tab separated values")
 async def append_cmd(interaction: discord.Interaction, row: str):
@@ -118,6 +120,7 @@ async def append_cmd(interaction: discord.Interaction, row: str):
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
 @tree.command(name="setcell", description="Write a value to a specific cell (A1).")
+@app_commands.default_permissions(administrator=True) 
 @app_commands.guilds(*GUILDS)
 @app_commands.describe(cell='Cell like "A1"', value="Text or number")
 async def setcell_cmd(interaction: discord.Interaction, cell: str, value: str):
