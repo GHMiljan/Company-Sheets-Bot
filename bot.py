@@ -1,4 +1,4 @@
-# bot.py
+# bot.py — Discord ↔ Google Sheets bot + loads duel_royale cog
 
 import os
 import json
@@ -12,33 +12,37 @@ from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
 
-# ----------------- Load env -----------------
+# ----------------- ENV -----------------
 load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 
-SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")          # the /d/<THIS>/edit ID
-WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1") # your tab name
-SA_JSON_INLINE = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_INLINE")
-SA_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")   # optional alternative
+SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")              # the /d/<THIS>/edit ID
+WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1")     # tab name
+SA_JSON_INLINE = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_INLINE")   # preferred on Railway
+SA_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")       # optional alternative
 
-# ----------------- Discord guilds (instant slash sync) -----------------
-# <<< EDIT THIS: put your server ID(s) below as integers >>>
-GUILD_IDS = [1181834816631623761]  # example; replace with your real server ID
+# Guilds for instant slash command sync
+def _guild_ids_from_env() -> list[int]:
+    raw = (os.getenv("GUILD_IDS") or "").strip()
+    return [int(x) for x in raw.split(",") if x.strip().isdigit()]
+
+DEFAULT_GUILD_IDS = [1181834816631623761]  # <-- replace with YOUR server ID if not using env
+GUILD_IDS: list[int] = _guild_ids_from_env() or DEFAULT_GUILD_IDS
 GUILDS = [discord.Object(id=g) for g in GUILD_IDS]
 
-# ----------------- Google auth -----------------
+# ----------------- Google Sheets -----------------
 def make_gspread_client() -> gspread.Client:
     if SA_JSON_INLINE:
         info = json.loads(SA_JSON_INLINE)
         creds = Credentials.from_service_account_info(
             info,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+            scopes=["https://www.googleapis.com/auth/spreadsheets"],
         )
     elif SA_JSON_PATH and os.path.exists(SA_JSON_PATH):
         creds = Credentials.from_service_account_file(
             SA_JSON_PATH,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+            scopes=["https://www.googleapis.com/auth/spreadsheets"],
         )
     else:
         raise RuntimeError(
@@ -48,44 +52,37 @@ def make_gspread_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 gc = make_gspread_client()
-sh = gc.open_by_key(SPREADSHEET_ID)        # raises if not shared/ID wrong
-ws = sh.worksheet(WORKSHEET_NAME)          # raises if tab name wrong
+sh = gc.open_by_key(SPREADSHEET_ID)      # 404 if ID wrong / sheet not shared to service account
+ws = sh.worksheet(WORKSHEET_NAME)        # error if tab name wrong
 
-# ----------------- Discord client -----------------
+# ----------------- Discord setup -----------------
 intents = discord.Intents.default()
 intents.guilds = True
+intents.members = True  # for member pickers
 
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# Write lock so multiple commands don't race on the sheet
+# Lock so multiple commands don't race on the sheet
 write_lock = asyncio.Lock()
 
 # ----------------- Helpers -----------------
 def safe_append_row(values: list[str]) -> None:
-    """
-    Synchronous helper to append a row safely.
-    Called via asyncio.to_thread(...) from async commands.
-    """
+    """Called in a thread to avoid blocking the event loop."""
     ws.append_row(values, value_input_option="USER_ENTERED")
 
 def safe_set_cell(a1: str, value: str) -> None:
     ws.update_acell(a1, value)
 
 def parse_row_str(s: str) -> list[str]:
-    # allow comma OR tab separated
-    if "\t" in s:
-        parts = [c.strip() for c in s.split("\t")]
-    else:
-        parts = [c.strip() for c in s.split(",")]
-    return parts
+    """Accept comma OR tab separated row input."""
+    return [c.strip() for c in (s.split("\t") if "\t" in s else s.split(","))]
 
-# ----------------- on_ready: force guild sync -----------------
+# ----------------- Ready → sync to guild(s) -----------------
 @client.event
 async def on_ready():
     try:
-        # Debug: list commands defined in code
-        print("Registered commands:", [c.name for c in tree.get_commands()])
+        print("Registered commands in code:", [c.name for c in tree.get_commands()])
         total = 0
         for g in GUILDS:
             synced = await tree.sync(guild=g)
@@ -100,7 +97,7 @@ async def on_ready():
 @app_commands.guilds(*GUILDS)
 async def status_cmd(interaction: discord.Interaction):
     try:
-        _ = ws.title  # touch the sheet to verify access
+        _ = ws.title  # touch the worksheet to verify access
         await interaction.response.send_message("✅ Online and connected to Sheets.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"❌ {e}", ephemeral=True)
@@ -116,7 +113,6 @@ async def ping_cmd(interaction: discord.Interaction):
 async def append_cmd(interaction: discord.Interaction, row: str):
     await interaction.response.defer(ephemeral=True)
     values = parse_row_str(row)
-
     async with write_lock:
         try:
             await asyncio.to_thread(safe_append_row, values)
@@ -126,7 +122,7 @@ async def append_cmd(interaction: discord.Interaction, row: str):
 
 @tree.command(name="setcell", description="Write a value to a specific cell (A1).")
 @app_commands.guilds(*GUILDS)
-@app_commands.describe(cell='Cell like "A1", value="Text or number"')
+@app_commands.describe(cell='Cell like "A1"', value="Text or number")
 async def setcell_cmd(interaction: discord.Interaction, cell: str, value: str):
     await interaction.response.defer(ephemeral=True)
     async with write_lock:
@@ -145,14 +141,12 @@ async def setcell_cmd(interaction: discord.Interaction, cell: str, value: str):
 async def loguser(interaction: discord.Interaction, member: discord.Member, category: str):
     await interaction.response.defer(ephemeral=True)
     date_str = datetime.now().strftime("%m/%d/%Y")  # MM/DD/YYYY
-    target_name = member.display_name  # or member.name
-    values = [date_str, target_name, category]
-
+    values = [date_str, member.display_name, category]
     async with write_lock:
         try:
             await asyncio.to_thread(safe_append_row, values)
             await interaction.followup.send(
-                f"✅ Logged **{target_name}** → **{category}**", ephemeral=True
+                f"✅ Logged **{member.display_name}** → **{category}**", ephemeral=True
             )
         except Exception as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
@@ -165,7 +159,6 @@ async def loguser_text(interaction: discord.Interaction, username: str, category
     await interaction.response.defer(ephemeral=True)
     date_str = datetime.now().strftime("%m/%d/%Y")
     values = [date_str, username, category]
-
     async with write_lock:
         try:
             await asyncio.to_thread(safe_append_row, values)
@@ -175,8 +168,18 @@ async def loguser_text(interaction: discord.Interaction, username: str, category
         except Exception as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
-# ----------------- Run -----------------
+# ----------------- Run (async; load the duel_royale extension) -----------------
+async def _main():
+    # Load your duel/royale cog before starting the client
+    try:
+        await client.load_extension("duel_royale")  # file: duel_royale.py in same folder
+        print("Loaded duel_royale cog ✅")
+    except Exception as e:
+        print(f"Failed to load duel_royale cog: {e}")
+
+    await client.start(DISCORD_BOT_TOKEN)
+
 if __name__ == "__main__":
     if not DISCORD_BOT_TOKEN:
         raise RuntimeError("Missing DISCORD_BOT_TOKEN.")
-    client.run(DISCORD_BOT_TOKEN)
+    asyncio.run(_main())
