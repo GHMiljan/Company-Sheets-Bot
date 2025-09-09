@@ -25,13 +25,12 @@ SA_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")    # optional alter
 if not DISCORD_BOT_TOKEN:
     raise RuntimeError("Missing DISCORD_BOT_TOKEN environment variable.")
 
-# ================= Discord client =================
+# ================= Discord bot (use commands.Bot, not Client) =================
 intents = discord.Intents.default()
-# enable members if you need .display_name reliably across events
-intents.members = True
+intents.members = True  # helpful for display_name, optional
 
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
+bot = commands.Bot(command_prefix="!", intents=intents)  # prefix unused for slash, fine to keep
+tree = bot.tree  # use the bot's built-in CommandTree
 
 # A simple write lock for Sheets operations
 write_lock = asyncio.Lock()
@@ -43,9 +42,6 @@ SCOPES = [
 ]
 
 def make_gspread_client() -> gspread.Client:
-    """
-    Build a gspread client using either inline JSON key material or a path.
-    """
     if SA_JSON_INLINE:
         info = json.loads(SA_JSON_INLINE)
         creds = Credentials.from_service_account_info(info, scopes=SCOPES)
@@ -59,56 +55,40 @@ def make_gspread_client() -> gspread.Client:
     return gspread.authorize(creds)
 
 def open_sheet(worksheet_name: str | None = None):
-    """
-    Open spreadsheet + worksheet and return (gc, sh, ws)
-    """
     gc = make_gspread_client()
     sh = gc.open_by_key(SPREADSHEET_ID)
     ws = sh.worksheet(worksheet_name or WORKSHEET_NAME)
     return gc, sh, ws
 
 def safe_append_row(values: list[str | int | float], worksheet_name: str | None = None):
-    """
-    Append a row to the configured worksheet.
-    """
     _, _, ws = open_sheet(worksheet_name)
     ws.append_row(values, value_input_option="USER_ENTERED")
 
 def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None = None):
-    """
-    Set a single cell (A1 notation) to value.
-    """
     _, _, ws = open_sheet(worksheet_name)
     ws.update_acell(a1, value)
 
 # ================= Startup & sync =================
-@client.event
+@bot.event
 async def setup_hook():
-    """
-    Load extensions/cogs before syncing commands.
-    """
-    # Load the duel system cog
+    # Load the duel system cog BEFORE first sync
     try:
-        await client.load_extension("duel_royale")
+        await bot.load_extension("duel_royale")
         print("Loaded duel_royale cog ✅")
     except Exception as e:
         print(f"Failed loading duel_royale: {e}")
 
-@client.event
+@bot.event
 async def on_ready():
     try:
-        # Show commands registered in code (from this file + loaded cogs)
         print("Registered commands in code:", [c.name for c in tree.get_commands()])
-
-        # Sync to every guild the bot is currently in (instant availability)
         total = 0
-        for g in client.guilds:
+        for g in bot.guilds:
             gobj = discord.Object(id=g.id)
-            synced = await tree.sync(guild=gobj)
+            synced = await tree.sync(guild=gobj)   # instant per-guild sync
             print(f"Synced {len(synced)} commands to guild {g.name} ({g.id})")
             total += len(synced)
-
-        print(f"Logged in as {client.user} (ID: {client.user.id})")
+        print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
 
@@ -132,7 +112,6 @@ async def sync_commands(interaction: discord.Interaction):
 async def status(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
-        # simple open to verify creds & access
         _, _, ws = open_sheet()
         await interaction.followup.send(f"✅ Connected to **{ws.spreadsheet.title}** / **{ws.title}**.", ephemeral=True)
     except Exception as e:
@@ -140,16 +119,15 @@ async def status(interaction: discord.Interaction):
 
 @tree.command(name="ping", description="Latency check.")
 async def ping(interaction: discord.Interaction):
-    await interaction.response.send_message(f"Pong! `{round(client.latency*1000)}ms`", ephemeral=True)
+    await interaction.response.send_message(f"Pong! `{round(bot.latency*1000)}ms`", ephemeral=True)
 
-# ================= Sheets commands (examples you were using) =================
+# ================= Sheets commands =================
 @tree.command(name="append", description="Append a row: date, user, category.")
 @app_commands.describe(username="Name to log", category="Category to log", worksheet="Optional worksheet/tab")
 async def append(interaction: discord.Interaction, username: str, category: str, worksheet: str | None = None):
     await interaction.response.defer(ephemeral=True)
     date_str = datetime.now().strftime("%m/%d/%Y")
     values = [date_str, username, category]
-
     async with write_lock:
         try:
             await asyncio.to_thread(safe_append_row, values, worksheet)
@@ -164,7 +142,6 @@ async def loguser(interaction: discord.Interaction, username: str, category: str
     await interaction.response.defer(ephemeral=True)
     date_str = datetime.now().strftime("%m/%d/%Y")
     values = [date_str, username, category]
-
     async with write_lock:
         try:
             await asyncio.to_thread(safe_append_row, values, worksheet)
@@ -179,7 +156,6 @@ async def loguser_text(interaction: discord.Interaction, username: str, category
     await interaction.response.defer(ephemeral=True)
     date_str = datetime.now().strftime("%m/%d/%Y")
     values = [date_str, username, category]
-
     async with write_lock:
         try:
             await asyncio.to_thread(safe_append_row, values, worksheet)
@@ -200,4 +176,4 @@ async def setcell(interaction: discord.Interaction, a1: str, value: str, workshe
 
 # ================= Run =================
 if __name__ == "__main__":
-    client.run(DISCORD_BOT_TOKEN)
+    bot.run(DISCORD_BOT_TOKEN)
