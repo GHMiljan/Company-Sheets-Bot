@@ -85,28 +85,16 @@ async def on_ready():
         total = 0
         for g in bot.guilds:
             gobj = discord.Object(id=g.id)
-            synced = await tree.sync(guild=gobj)   # instant per-guild sync
+            synced = await tree.sync(guild=gobj)
             print(f"Synced {len(synced)} commands to guild {g.name} ({g.id})")
             total += len(synced)
+
+        synced_global = await tree.sync()
+        print(f"Synced {len(synced_global)} commands globally")
+
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
-
-# ================= Utility / admin =================
-@app_commands.default_permissions(administrator=True)
-@tree.command(name="sync_commands", description="Force-resync slash commands to THIS server (admin only).")
-async def sync_commands(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        gobj = discord.Object(id=interaction.guild_id)
-        synced = await tree.sync(guild=gobj)
-        await interaction.followup.send(
-            f"Synced **{len(synced)}** commands to **{interaction.guild.name}** ({interaction.guild_id}).",
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.followup.send(f"Sync failed: `{e}`", ephemeral=True)
-
 # ================= Bot health commands =================
 @tree.command(name="status", description="Check bot → Google Sheets connectivity.")
 async def status(interaction: discord.Interaction):
